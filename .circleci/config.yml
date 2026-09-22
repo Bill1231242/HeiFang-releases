@@ -92,6 +92,16 @@ jobs:
             rm -rf "$x64_root"
             mkdir -p "$x64_root/node" "$x64_root/uv" "$x64_root/bin"
 
+            if [ ! -x /usr/local/bin/brew ]; then
+              NONINTERACTIVE=1 CI=1 arch -x86_64 /bin/bash -c \
+                "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            fi
+            arch -x86_64 /usr/local/bin/brew install pkgconf openssl@3
+            x64_openssl_prefix="$(arch -x86_64 /usr/local/bin/brew --prefix openssl@3)"
+            x64_pkgconf_prefix="$(arch -x86_64 /usr/local/bin/brew --prefix pkgconf)"
+            test -x "$x64_pkgconf_prefix/bin/pkg-config"
+            test -f "$x64_openssl_prefix/lib/pkgconfig/openssl.pc"
+
             curl --fail --location --retry 3 \
               --output /tmp/node-x64.tar.gz \
               https://nodejs.org/dist/v22.18.0/node-v22.18.0-darwin-x64.tar.gz
@@ -112,6 +122,11 @@ jobs:
               'if (process.arch !== "x64") process.exit(1)'
             arch -x86_64 "$x64_root/uv/uv" --version
 
+            {
+              echo "export X64_OPENSSL_PREFIX=\"$x64_openssl_prefix\""
+              echo "export X64_PKGCONF_PREFIX=\"$x64_pkgconf_prefix\""
+            } >> "$BASH_ENV"
+
       - run:
           name: Build and verify Intel package
           command: |
@@ -123,14 +138,17 @@ jobs:
             test "$(git -C source-x64 rev-parse HEAD)" = "$SOURCE_COMMIT"
 
             export X64_ROOT="$HOME/x64-toolchain"
-            export X64_PATH="$X64_ROOT/bin:$X64_ROOT/node/bin:$X64_ROOT/uv:/usr/bin:/bin:/usr/sbin:/sbin"
+            export X64_PATH="$X64_ROOT/bin:$X64_ROOT/node/bin:$X64_ROOT/uv:$X64_PKGCONF_PREFIX/bin:$X64_OPENSSL_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
             arch -x86_64 /bin/bash -c '
               set -euo pipefail
               export PATH="$X64_PATH"
               export COREPACK_HOME="$HOME/.cache/corepack-x64"
               export NODE_OPTIONS="--max-old-space-size=8192"
               export CSC_IDENTITY_AUTO_DISCOVERY=false
+              export OPENSSL_DIR="$X64_OPENSSL_PREFIX"
+              export PKG_CONFIG_PATH="$X64_OPENSSL_PREFIX/lib/pkgconfig"
               test "$(node -p process.arch)" = x64
+              test "$(pkg-config --modversion openssl)" != ""
               test "$(node -p "require(\"./source-x64/apps/desktop/package.json\").version")" = "$APP_VERSION"
               cd source-x64
               pnpm install --frozen-lockfile --filter heifang-desktop...
