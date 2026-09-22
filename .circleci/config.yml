@@ -7,7 +7,7 @@ jobs:
     resource_class: m4pro.medium
     environment:
       SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: e3879fad71651e384839902017ceeb1a5ac84232
+      SOURCE_COMMIT: a789701f01b79c01fbd6c73cba1b69cf766f281e
       APP_VERSION: 0.9.74
       NODE_OPTIONS: --max-old-space-size=8192
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
