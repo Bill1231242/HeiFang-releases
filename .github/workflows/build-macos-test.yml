@@ -1,0 +1,186 @@
+name: Build macOS test packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-test-v0.9.74
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: Bill1231242/HeiFang
+  SOURCE_COMMIT: daf49b58feac5d6c954adb5490d741a1c6586f1a
+  RELEASE_TAG: v0.9.74-mac-test.1
+  APP_VERSION: 0.9.74
+
+jobs:
+  build:
+    name: Build macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            expected_macho: arm64
+          - arch: x64
+            runner: macos-15-intel
+            expected_macho: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out the pinned private source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ env.SOURCE_COMMIT }}
+          ssh-key: ${{ secrets.HEIFANG_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: source
+
+      - name: Confirm the pinned source
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(node -p "require('./apps/desktop/package.json').version")" = "$APP_VERSION"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.28.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+
+      - name: Install desktop dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile --filter heifang-desktop...
+
+      - name: Build the native sidecar and desktop bundle
+        working-directory: source/apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          NODE_OPTIONS: --max-old-space-size=8192
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm bundle:sidecar
+          pnpm build
+          pnpm exec electron-builder \
+            --config electron-builder.config.mjs \
+            --mac \
+            --${{ matrix.arch }} \
+            --publish never
+
+      - name: Verify native architecture and stage the DMG
+        working-directory: source/apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ matrix.expected_macho }}"
+          node_bin="resources/tools/node/bin/node"
+          python_bin="$(realpath resources/sidecar/python/bin/python3)"
+          app_bin="$(find release -type f -path '*/Contents/MacOS/*' -perm -111 | head -n 1)"
+          dmg="release/${APP_VERSION}/HeiFang-${APP_VERSION}-mac-${{ matrix.arch }}.dmg"
+
+          test -x "$node_bin"
+          test -x "$python_bin"
+          test -n "$app_bin"
+          test -f "$dmg"
+
+          lipo -archs "$node_bin" | grep -qw "$expected"
+          lipo -archs "$python_bin" | grep -qw "$expected"
+          lipo -archs "$app_bin" | grep -qw "$expected"
+
+          stage="$RUNNER_TEMP/heifang-mac-${{ matrix.arch }}"
+          mkdir -p "$stage"
+          cp "$dmg" "$stage/"
+          (
+            cd "$stage"
+            shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+          )
+
+      - name: Upload verified package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: heifang-mac-${{ matrix.arch }}
+          path: ${{ runner.temp }}/heifang-mac-${{ matrix.arch }}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish macOS test release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download both verified packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: heifang-mac-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify and publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          arm="dist/HeiFang-${APP_VERSION}-mac-arm64.dmg"
+          intel="dist/HeiFang-${APP_VERSION}-mac-x64.dmg"
+          test -f "$arm"
+          test -f "$intel"
+          (
+            cd dist
+            sha256sum -c "$(basename "$arm.sha256")"
+            sha256sum -c "$(basename "$intel.sha256")"
+          )
+
+          notes="$(mktemp)"
+          printf '%s\n' \
+            'HeiFang 0.9.74 macOS 双架构测试包。' \
+            '' \
+            '- Apple Silicon：HeiFang-0.9.74-mac-arm64.dmg' \
+            '- Intel Mac：HeiFang-0.9.74-mac-x64.dmg' \
+            '- 本批次未使用 Apple Developer ID 签名或公证，仅供安装测试。' \
+            '- 源码固定到 daf49b58feac5d6c954adb5490d741a1c6586f1a。' \
+            > "$notes"
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title 'HeiFang 0.9.74 macOS 双架构测试包' \
+              --notes-file "$notes" \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title 'HeiFang 0.9.74 macOS 双架构测试包' \
+              --notes-file "$notes" \
+              --prerelease
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "$arm" "$arm.sha256" \
+            "$intel" "$intel.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url,isDraft,isPrerelease,assets
