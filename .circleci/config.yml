@@ -46,7 +46,9 @@ jobs:
             set -euo pipefail
             source "$BASH_ENV"
             rm -rf source-arm64
-            git clone --filter=blob:none "git@github.com:${SOURCE_REPOSITORY}.git" source-arm64
+            git clone --filter=blob:none --no-checkout "git@github.com:${SOURCE_REPOSITORY}.git" source-arm64
+            git -C source-arm64 fetch --depth=1 origin "$SOURCE_COMMIT"
+            git -C source-arm64 checkout --detach "$SOURCE_COMMIT"
             test "$(git -C source-arm64 rev-parse HEAD)" = "$SOURCE_COMMIT"
             test "$(node -p "require('./source-arm64/apps/desktop/package.json').version")" = "$APP_VERSION"
 
@@ -115,7 +117,9 @@ jobs:
           command: |
             set -euo pipefail
             rm -rf source-x64
-            git clone --filter=blob:none "git@github.com:${SOURCE_REPOSITORY}.git" source-x64
+            git clone --filter=blob:none --no-checkout "git@github.com:${SOURCE_REPOSITORY}.git" source-x64
+            git -C source-x64 fetch --depth=1 origin "$SOURCE_COMMIT"
+            git -C source-x64 checkout --detach "$SOURCE_COMMIT"
             test "$(git -C source-x64 rev-parse HEAD)" = "$SOURCE_COMMIT"
 
             export X64_ROOT="$HOME/x64-toolchain"
