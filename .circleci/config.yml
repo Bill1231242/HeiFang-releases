@@ -1,0 +1,171 @@
+version: 2.1
+
+jobs:
+  build-macos-test:
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    environment:
+      SOURCE_REPOSITORY: Bill1231242/HeiFang
+      SOURCE_COMMIT: e3879fad71651e384839902017ceeb1a5ac84232
+      APP_VERSION: 0.9.74
+      NODE_OPTIONS: --max-old-space-size=8192
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - checkout
+
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:WawZS+NpaAx3/ot08xKo9AWGNtOJ0gE+zMI2fqyaTkA"
+
+      - run:
+          name: Prepare native ARM64 toolchain
+          command: |
+            set -euo pipefail
+            mkdir -p ~/.ssh ~/bin /tmp/heifang-mac-dist
+            chmod 700 ~/.ssh
+            ssh-keyscan github.com >> ~/.ssh/known_hosts
+            ssh-add -l
+
+            brew install node@22 uv
+            {
+              echo 'export PATH="$HOME/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"'
+              echo 'export COREPACK_HOME="$HOME/.cache/corepack"'
+            } >> "$BASH_ENV"
+            source "$BASH_ENV"
+            corepack enable --install-directory "$HOME/bin"
+            corepack prepare pnpm@10.28.1 --activate
+
+            test "$(node -p process.arch)" = arm64
+            test "$(uv --version | awk '{print $1}')" = uv
+
+      - run:
+          name: Build and verify Apple Silicon package
+          command: |
+            set -euo pipefail
+            source "$BASH_ENV"
+            rm -rf source-arm64
+            git clone --filter=blob:none "git@github.com:${SOURCE_REPOSITORY}.git" source-arm64
+            test "$(git -C source-arm64 rev-parse HEAD)" = "$SOURCE_COMMIT"
+            test "$(node -p "require('./source-arm64/apps/desktop/package.json').version")" = "$APP_VERSION"
+
+            cd source-arm64
+            pnpm install --frozen-lockfile --filter heifang-desktop...
+            pnpm -C apps/desktop bundle:sidecar
+            pnpm -C apps/desktop build
+            pnpm -C apps/desktop exec electron-builder \
+              --config electron-builder.config.mjs \
+              --mac \
+              --arm64 \
+              --publish never
+
+            desktop=apps/desktop
+            node_bin="$desktop/resources/tools/node/bin/node"
+            python_bin="$(realpath "$desktop/resources/sidecar/python/bin/python3")"
+            app_bin="$(find "$desktop/release" -type f -path '*/Contents/MacOS/*' -perm -111 | head -n 1)"
+            dmg="$desktop/release/${APP_VERSION}/HeiFang-${APP_VERSION}-mac-arm64.dmg"
+            test -x "$node_bin"
+            test -x "$python_bin"
+            test -n "$app_bin"
+            test -f "$dmg"
+            lipo -archs "$node_bin" | grep -qw arm64
+            lipo -archs "$python_bin" | grep -qw arm64
+            lipo -archs "$app_bin" | grep -qw arm64
+            cp "$dmg" /tmp/heifang-mac-dist/
+            (
+              cd /tmp/heifang-mac-dist
+              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+            )
+            cd ..
+            rm -rf source-arm64
+
+      - run:
+          name: Prepare native Intel toolchain under Rosetta
+          command: |
+            set -euo pipefail
+            softwareupdate --install-rosetta --agree-to-license || true
+
+            x64_root="$HOME/x64-toolchain"
+            rm -rf "$x64_root"
+            mkdir -p "$x64_root/node" "$x64_root/uv" "$x64_root/bin"
+
+            curl --fail --location --retry 3 \
+              --output /tmp/node-x64.tar.gz \
+              https://nodejs.org/dist/v22.18.0/node-v22.18.0-darwin-x64.tar.gz
+            tar -xzf /tmp/node-x64.tar.gz -C "$x64_root/node" --strip-components=1
+
+            curl --fail --location --retry 3 \
+              --output /tmp/uv-x64.tar.gz \
+              https://github.com/astral-sh/uv/releases/download/0.12.2/uv-x86_64-apple-darwin.tar.gz
+            tar -xzf /tmp/uv-x64.tar.gz -C "$x64_root/uv" --strip-components=1
+
+            PATH="$x64_root/node/bin:$PATH" \
+              "$x64_root/node/bin/corepack" enable --install-directory "$x64_root/bin"
+            PATH="$x64_root/node/bin:$PATH" \
+              COREPACK_HOME="$HOME/.cache/corepack-x64" \
+              "$x64_root/node/bin/corepack" prepare pnpm@10.28.1 --activate
+
+            arch -x86_64 "$x64_root/node/bin/node" -e \
+              'if (process.arch !== "x64") process.exit(1)'
+            arch -x86_64 "$x64_root/uv/uv" --version
+
+      - run:
+          name: Build and verify Intel package
+          command: |
+            set -euo pipefail
+            rm -rf source-x64
+            git clone --filter=blob:none "git@github.com:${SOURCE_REPOSITORY}.git" source-x64
+            test "$(git -C source-x64 rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+            export X64_ROOT="$HOME/x64-toolchain"
+            export X64_PATH="$X64_ROOT/bin:$X64_ROOT/node/bin:$X64_ROOT/uv:/usr/bin:/bin:/usr/sbin:/sbin"
+            arch -x86_64 /bin/bash -c '
+              set -euo pipefail
+              export PATH="$X64_PATH"
+              export COREPACK_HOME="$HOME/.cache/corepack-x64"
+              export NODE_OPTIONS="--max-old-space-size=8192"
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              test "$(node -p process.arch)" = x64
+              test "$(node -p "require(\"./source-x64/apps/desktop/package.json\").version")" = "$APP_VERSION"
+              cd source-x64
+              pnpm install --frozen-lockfile --filter heifang-desktop...
+              pnpm -C apps/desktop bundle:sidecar
+              pnpm -C apps/desktop build
+              pnpm -C apps/desktop exec electron-builder \
+                --config electron-builder.config.mjs \
+                --mac \
+                --x64 \
+                --publish never
+            '
+
+            desktop=source-x64/apps/desktop
+            node_bin="$desktop/resources/tools/node/bin/node"
+            python_bin="$(realpath "$desktop/resources/sidecar/python/bin/python3")"
+            app_bin="$(find "$desktop/release" -type f -path '*/Contents/MacOS/*' -perm -111 | head -n 1)"
+            dmg="$desktop/release/${APP_VERSION}/HeiFang-${APP_VERSION}-mac-x64.dmg"
+            test -x "$node_bin"
+            test -x "$python_bin"
+            test -n "$app_bin"
+            test -f "$dmg"
+            lipo -archs "$node_bin" | grep -qw x86_64
+            lipo -archs "$python_bin" | grep -qw x86_64
+            lipo -archs "$app_bin" | grep -qw x86_64
+            cp "$dmg" /tmp/heifang-mac-dist/
+            (
+              cd /tmp/heifang-mac-dist
+              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+              shasum -a 256 -c *.sha256
+            )
+
+      - store_artifacts:
+          path: /tmp/heifang-mac-dist
+          destination: macos-test-v0.9.74
+
+workflows:
+  build-macos-test:
+    jobs:
+      - build-macos-test:
+          filters:
+            branches:
+              only: main
