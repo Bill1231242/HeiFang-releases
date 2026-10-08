@@ -7,8 +7,9 @@ jobs:
     resource_class: m4pro.medium
     environment:
       SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: a789701f01b79c01fbd6c73cba1b69cf766f281e
-      APP_VERSION: 0.9.74
+      SOURCE_COMMIT: d8144853cb66fea2dbbe1c2f8c077fdb8dac6709
+      APP_VERSION: 0.9.97
+      DESKTOP_RELEASE_CHANNEL: stable
       NODE_OPTIONS: --max-old-space-size=8192
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
@@ -75,9 +76,16 @@ jobs:
             lipo -archs "$python_bin" | grep -qw arm64
             lipo -archs "$app_bin" | grep -qw arm64
             cp "$dmg" /tmp/heifang-mac-dist/
+            zip="${dmg%.dmg}.zip"
+            test -s "$zip"
+            cp "$zip" /tmp/heifang-mac-dist/
+            "$node_bin" -e 'console.log("bundled-node", process.platform, process.arch)'
+            PYTHONPATH="$desktop/resources/sidecar/site-packages" "$python_bin" -c 'import heifang.sidecar; print("bundled-sidecar-import-ok")'
+            plutil -extract CFBundleShortVersionString raw "$(dirname "$(dirname "$app_bin")")/Info.plist" | grep -Fx "$APP_VERSION"
+            printf 'source=%s\nversion=%s\n' "$SOURCE_COMMIT" "$APP_VERSION" > /tmp/heifang-mac-dist/PROVENANCE.txt
             (
               cd /tmp/heifang-mac-dist
-              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+              shasum -a 256 "$(basename "$dmg")" "$(basename "$zip")" > "$(basename "$dmg").sha256"
             )
             cd ..
             rm -rf source-arm64
@@ -159,15 +167,22 @@ jobs:
             lipo -archs "$python_bin" | grep -qw x86_64
             lipo -archs "$app_bin" | grep -qw x86_64
             cp "$dmg" /tmp/heifang-mac-dist/
+            zip="${dmg%.dmg}.zip"
+            test -s "$zip"
+            cp "$zip" /tmp/heifang-mac-dist/
+            "$node_bin" -e 'console.log("bundled-node", process.platform, process.arch)'
+            PYTHONPATH="$desktop/resources/sidecar/site-packages" "$python_bin" -c 'import heifang.sidecar; print("bundled-sidecar-import-ok")'
+            plutil -extract CFBundleShortVersionString raw "$(dirname "$(dirname "$app_bin")")/Info.plist" | grep -Fx "$APP_VERSION"
+            printf 'source=%s\nversion=%s\n' "$SOURCE_COMMIT" "$APP_VERSION" > /tmp/heifang-mac-dist/PROVENANCE.txt
             (
               cd /tmp/heifang-mac-dist
-              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
+              shasum -a 256 "$(basename "$dmg")" "$(basename "$zip")" > "$(basename "$dmg").sha256"
               shasum -a 256 -c *.sha256
             )
 
       - store_artifacts:
           path: /tmp/heifang-mac-dist
-          destination: macos-test-v0.9.74
+          destination: macos-test-v0.9.97
 
 workflows:
   build-macos-test:
@@ -175,4 +190,4 @@ workflows:
       - build-macos-test:
           filters:
             branches:
-              only: main
+              only: build/macos-0.9.97-d8144853
