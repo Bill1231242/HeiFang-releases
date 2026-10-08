@@ -7,8 +7,8 @@ jobs:
     resource_class: m4pro.medium
     environment:
       SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: d8144853cb66fea2dbbe1c2f8c077fdb8dac6709
-      APP_VERSION: 0.9.97
+      SOURCE_COMMIT: cfeaeb4b9ea68f891bd0c5a7f246a7311aa4a33d
+      APP_VERSION: 0.9.98
       DESKTOP_RELEASE_CHANNEL: stable
       NODE_OPTIONS: --max-old-space-size=8192
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -79,6 +79,7 @@ jobs:
             zip="${dmg%.dmg}.zip"
             test -s "$zip"
             cp "$zip" /tmp/heifang-mac-dist/
+            HEIFANG_MAC_EXECUTABLE="$app_bin" HEIFANG_MAC_SOURCE_ROOT="$PWD" HEIFANG_MAC_ARCH=arm64 node ../.circleci/mac-native-qa.mjs
             "$node_bin" -e 'console.log("bundled-node", process.platform, process.arch)'
             PYTHONPATH="$desktop/resources/sidecar/site-packages" "$python_bin" -c 'import heifang.sidecar; print("bundled-sidecar-import-ok")'
             plutil -extract CFBundleShortVersionString raw "$(dirname "$(dirname "$app_bin")")/Info.plist" | grep -Fx "$APP_VERSION"
@@ -170,6 +171,7 @@ jobs:
             zip="${dmg%.dmg}.zip"
             test -s "$zip"
             cp "$zip" /tmp/heifang-mac-dist/
+            HEIFANG_MAC_EXECUTABLE="$app_bin" HEIFANG_MAC_SOURCE_ROOT="$PWD/source-x64" HEIFANG_MAC_ARCH=x64 "$node_bin" .circleci/mac-native-qa.mjs
             "$node_bin" -e 'console.log("bundled-node", process.platform, process.arch)'
             PYTHONPATH="$desktop/resources/sidecar/site-packages" "$python_bin" -c 'import heifang.sidecar; print("bundled-sidecar-import-ok")'
             plutil -extract CFBundleShortVersionString raw "$(dirname "$(dirname "$app_bin")")/Info.plist" | grep -Fx "$APP_VERSION"
@@ -182,7 +184,7 @@ jobs:
 
       - store_artifacts:
           path: /tmp/heifang-mac-dist
-          destination: macos-test-v0.9.97
+          destination: macos-test-v0.9.98
 
 workflows:
   build-macos-test:
@@ -190,4 +192,4 @@ workflows:
       - build-macos-test:
           filters:
             branches:
-              only: build/macos-0.9.97-d8144853
+              only: build/macos-0.9.98-cfeaeb4b
