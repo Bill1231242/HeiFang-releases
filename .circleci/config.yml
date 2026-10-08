@@ -18,7 +18,7 @@ jobs:
 
       - add_ssh_keys:
           fingerprints:
-            - "SHA256:WawZS+NpaAx3/ot08xKo9AWGNtOJ0gE+zMI2fqyaTkA"
+            - "SHA256:vmxldrviCvW+ZfQfGqhGsRqxmMEkFZl9mUlP9Hc+UGw"
 
       - run:
           name: Prepare native ARM64 toolchain
