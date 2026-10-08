@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {mkdirSync,writeFileSync,existsSync} from 'node:fs';
+import {mkdirSync,writeFileSync,existsSync,realpathSync} from 'node:fs';
 import {resolve} from 'node:path';
 const root=resolve(process.env.HEIFANG_MAC_SOURCE_ROOT),arch=process.env.HEIFANG_MAC_ARCH;
 assert(['arm64','x64'].includes(arch));
@@ -11,7 +11,7 @@ const proof={complete:false,architecture:arch,version:'0.9.98',scope:'Real macOS
 try{
  app=await _electron.launch({executablePath:resolve(process.env.HEIFANG_MAC_EXECUTABLE),args:['--user-data-dir='+profile],env:{...process.env,ELECTRON_RUN_AS_NODE:undefined,ELECTRON_RENDERER_URL:undefined},timeout:45000});
  proof.meta=await app.evaluate(({app,BrowserWindow},home)=>{app.setPath('home',home);for(const w of BrowserWindow.getAllWindows())w.hide();return {version:app.getVersion(),packaged:app.isPackaged,home:app.getPath('home'),userData:app.getPath('userData'),arch:process.arch}},home);
- assert.equal(proof.meta.version,'0.9.98');assert.equal(proof.meta.arch,arch);assert(proof.meta.packaged);assert.equal(proof.meta.userData,profile);
+ assert.equal(proof.meta.version,'0.9.98');assert.equal(proof.meta.arch,arch);assert(proof.meta.packaged);assert.equal(realpathSync(proof.meta.userData),realpathSync(profile));
  const page=await app.firstWindow();page.setDefaultTimeout(12000);page.on('pageerror',e=>proof.errors.push(e.message));
  await page.route('https://heifang.billtsing.site/api/**',async route=>{
   const path=new URL(route.request().url()).pathname.replace(/^\/api/,'');let body={data:[],items:[],total:0};
