@@ -94,6 +94,9 @@ step log-catalog uv run --locked --no-sync python scripts/sync_log_event_registr
 step migrations uv run --locked --no-sync alembic upgrade head
 step postgres-vector uv run --locked --no-sync python "$CONFIG_ROOT/ci_support.py" verify-db
 step schema-live uv run --locked --no-sync python scripts/check_schema_gate.py --live
+step integration-db-isolation uv run --locked --no-sync python "$CONFIG_ROOT/prepare-integration-db.py"
+test "$last_status" -eq 0
+export TEST_DATABASE_URL=postgresql+asyncpg://heifang:heifang@127.0.0.1:5432/heifang_it_tests
 step pytest uv run --locked --no-sync pytest tests --tb=short -ra -o junit_family=xunit1 \
   -p description_release_testclock -p release_verification_plugin --junitxml="$ARTIFACTS/junit/backend.xml"
 step pytest-report python "$CONFIG_ROOT/ci_support.py" reports "$ARTIFACTS"

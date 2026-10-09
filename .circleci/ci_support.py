@@ -15,7 +15,7 @@ REQUIRED_STAGES = [
     "inputs", "uv-install", "node-download", "node-checksums", "pnpm-install",
     "source-fetch", "dependencies", "ripgrep", "ripgrep-version", "contract-dependencies",
     "runtime", "postgres-ready", "ruff", "mypy", "log-catalog", "migrations",
-    "postgres-vector", "schema-live", "pytest", "pytest-report", "contracts",
+    "postgres-vector", "schema-live", "integration-db-isolation", "pytest", "pytest-report", "contracts",
     "conformance-export", "legal-mirror", "doc-pointers", "drift", "untracked",
 ]
 TAPE_SKIP_NODE = "tests/integration/test_demo_tape_db_hydrate.py::test_lv_molihua_tape_db_hydrate_has_ceo_after_team"
