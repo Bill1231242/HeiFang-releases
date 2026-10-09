@@ -7,8 +7,8 @@ jobs:
     resource_class: m4pro.medium
     environment:
       SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: cfeaeb4b9ea68f891bd0c5a7f246a7311aa4a33d
-      APP_VERSION: 0.9.98
+      SOURCE_COMMIT: ed5f9b4244b93cbc4f9f50863ab249cc4366c403
+      APP_VERSION: 0.9.99
       DESKTOP_RELEASE_CHANNEL: stable
       NODE_OPTIONS: --max-old-space-size=8192
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -184,7 +184,7 @@ jobs:
 
       - store_artifacts:
           path: /tmp/heifang-mac-dist
-          destination: macos-test-v0.9.98
+          destination: macos-test-v0.9.99
 
 workflows:
   build-macos-test:
@@ -192,4 +192,4 @@ workflows:
       - build-macos-test:
           filters:
             branches:
-              only: build/macos-0.9.98-cfeaeb4b
+              only: build/macos-0.9.99-ed5f9b42
