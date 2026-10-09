@@ -19,7 +19,7 @@ jobs:
     shell: /bin/bash -eo pipefail
     environment:
       SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: ed5f9b4244b93cbc4f9f50863ab249cc4366c403
+      SOURCE_COMMIT: df18e4f8ab783a4de59d6c9844a5dc13b8270bba
       UV_VERSION: "0.12.2"
       NODE_VERSION: "22.18.0"
       PNPM_VERSION: "10.28.1"
@@ -60,6 +60,6 @@ workflows:
       - verify-linux:
           filters:
             branches:
-              only: build/linux-0.9.99-ed5f9b42
+              only: build/linux-0.9.99-df18e4f8
             tags:
               ignore: /.*/
