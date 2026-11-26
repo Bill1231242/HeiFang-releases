@@ -1,178 +1,229 @@
 version: 2.1
 
-jobs:
-  build-macos-test:
-    macos:
-      xcode: "16.4.0"
-    resource_class: m4pro.medium
-    environment:
-      SOURCE_REPOSITORY: Bill1231242/HeiFang
-      SOURCE_COMMIT: a789701f01b79c01fbd6c73cba1b69cf766f281e
-      APP_VERSION: 0.9.74
-      NODE_OPTIONS: --max-old-space-size=8192
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+# macOS 构建手动触发。只有签名并通过公证校验的产物进入正式发布。
+parameters:
+  build_mac:
+    type: boolean
+    default: true
+  build_intel:
+    type: boolean
+    default: true
+  sign_mac:
+    type: boolean
+    default: false
 
+commands:
+  checkout-release-source:
     steps:
-      - checkout
-
       - add_ssh_keys:
           fingerprints:
             - "SHA256:WawZS+NpaAx3/ot08xKo9AWGNtOJ0gE+zMI2fqyaTkA"
-
       - run:
-          name: Prepare native ARM64 toolchain
+          name: Check out the pinned HeiFang release source
           command: |
             set -euo pipefail
-            mkdir -p ~/.ssh ~/bin /tmp/heifang-mac-dist
+            mkdir -p ~/.ssh
             chmod 700 ~/.ssh
-            ssh-keyscan github.com >> ~/.ssh/known_hosts
-            ssh-add -l
+            git config --global core.sshCommand "ssh -o StrictHostKeyChecking=yes"
+            printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
+            git init
+            git remote add origin git@github.com:Bill1231242/HeiFang.git
+            git fetch --depth=1 origin 7ef5a2358233e10d53694ba6071f80fd2ba5acf5
+            git checkout --detach FETCH_HEAD
+            test "$(git rev-parse HEAD)" = 7ef5a2358233e10d53694ba6071f80fd2ba5acf5
+  package-mac:
+    parameters:
+      arch:
+        type: enum
+        enum: [arm64, x64]
+    steps:
+      - run:
+          name: Build macOS << parameters.arch >> package
+          command: |
+            set -euo pipefail
+            builder_args=(--config electron-builder.config.mjs --mac --<< parameters.arch >> --publish never)
+            if << pipeline.parameters.sign_mac >>; then
+              for variable in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+                if [[ -z "${!variable:-}" ]]; then
+                  echo "Missing macOS signing variable: $variable" >&2
+                  exit 1
+                fi
+              done
+              unset CSC_IDENTITY_AUTO_DISCOVERY
+              builder_args+=(--config.forceCodeSigning=true --config.mac.notarize=true)
+            else
+              unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+              unset APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+            fi
+            pnpm --filter heifang-desktop build
+            pnpm --filter heifang-desktop exec electron-builder "${builder_args[@]}"
+  verify-mac-package:
+    parameters:
+      arch:
+        type: enum
+        enum: [arm64, x64]
+    steps:
+      - run:
+          name: Verify macOS << parameters.arch >> installer
+          command: |
+            set -euo pipefail
+            arch=<< parameters.arch >>
+            machine="$arch"
+            if [[ "$arch" == x64 ]]; then machine=x86_64; fi
+            desktop=apps/desktop
+            version="$(node -p "require('./$desktop/package.json').version")"
+            test "$version" = 0.9.213
+            release="$desktop/release/$version"
+            name="HeiFang-$version-mac-$arch"
+            test -s "$release/$name.dmg"
+            test -s "$release/$name.zip"
+            test -s "$release/latest-mac.yml"
+            app="$(find "$release" -type d -name '*.app' -prune -print -quit)"
+            test -n "$app"
+            plist="$app/Contents/Info.plist"
+            executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$version"
+            lipo -archs "$app/Contents/MacOS/$executable" | grep -qw "$machine"
+            resources="$app/Contents/Resources"
+            test "$("$resources/tools/node/bin/node" -p process.arch)" = "$arch"
+            PYTHONPATH="$resources/sidecar/site-packages" "$resources/sidecar/python/bin/python3" -s -c \
+              "import platform, six; assert platform.machine() == '$machine'; assert six.__version__ == '1.17.0'"
+            hdiutil verify "$release/$name.dmg"
+            if << pipeline.parameters.sign_mac >>; then
+              codesign --verify --deep --strict "$app"
+              xcrun stapler validate "$app"
+            fi
+            stage="/tmp/heifang-mac-$arch"
+            mkdir -p "$stage"
+            cp "$release/$name.dmg" "$release/$name.zip" "$release/latest-mac.yml" "$stage/"
+            for file in "$release/$name."*.blockmap; do
+              if [[ -f "$file" ]]; then cp "$file" "$stage/"; fi
+            done
+            cd "$stage"
+            shasum -a 256 "$name.dmg" "$name.zip" > SHA256SUMS.txt
+            shasum -a 256 -c SHA256SUMS.txt
 
+jobs:
+  build-mac-arm64:
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    working_directory: ~/heifang
+    environment:
+      NODE_OPTIONS: --max-old-space-size=8192
+      DESKTOP_RELEASE_CHANNEL: stable
+      CI: "true"
+    steps:
+      - checkout-release-source
+      - run:
+          name: Install build tools
+          command: |
+            set -euo pipefail
             brew install node@22 uv
-            {
-              echo 'export PATH="$HOME/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"'
-              echo 'export COREPACK_HOME="$HOME/.cache/corepack"'
-            } >> "$BASH_ENV"
+            mkdir -p "$HOME/bin"
+            echo 'export PATH="$HOME/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:$PATH"' >> "$BASH_ENV"
             source "$BASH_ENV"
             corepack enable --install-directory "$HOME/bin"
             corepack prepare pnpm@10.28.1 --activate
-
             test "$(node -p process.arch)" = arm64
-            test "$(uv --version | awk '{print $1}')" = uv
-
+            node --version
+            pnpm --version
+            uv --version
       - run:
-          name: Build and verify Apple Silicon package
-          command: |
-            set -euo pipefail
-            source "$BASH_ENV"
-            rm -rf source-arm64
-            git clone --filter=blob:none --no-checkout "git@github.com:${SOURCE_REPOSITORY}.git" source-arm64
-            git -C source-arm64 fetch --depth=1 origin "$SOURCE_COMMIT"
-            git -C source-arm64 checkout --detach "$SOURCE_COMMIT"
-            test "$(git -C source-arm64 rev-parse HEAD)" = "$SOURCE_COMMIT"
-            test "$(node -p "require('./source-arm64/apps/desktop/package.json').version")" = "$APP_VERSION"
-
-            cd source-arm64
-            pnpm install --frozen-lockfile --filter heifang-desktop...
-            pnpm -C apps/desktop bundle:sidecar
-            pnpm -C apps/desktop build
-            pnpm -C apps/desktop exec electron-builder \
-              --config electron-builder.config.mjs \
-              --mac \
-              --arm64 \
-              --publish never
-
-            desktop=apps/desktop
-            node_bin="$desktop/resources/tools/node/bin/node"
-            python_bin="$(realpath "$desktop/resources/sidecar/python/bin/python3")"
-            app_bin="$(find "$desktop/release" -type f -path '*/Contents/MacOS/*' -perm -111 | head -n 1)"
-            dmg="$desktop/release/${APP_VERSION}/HeiFang-${APP_VERSION}-mac-arm64.dmg"
-            test -x "$node_bin"
-            test -x "$python_bin"
-            test -n "$app_bin"
-            test -f "$dmg"
-            lipo -archs "$node_bin" | grep -qw arm64
-            lipo -archs "$python_bin" | grep -qw arm64
-            lipo -archs "$app_bin" | grep -qw arm64
-            cp "$dmg" /tmp/heifang-mac-dist/
-            (
-              cd /tmp/heifang-mac-dist
-              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
-            )
-            cd ..
-            rm -rf source-arm64
-
+          name: Install workspace dependencies
+          command: pnpm install --frozen-lockfile --filter heifang-desktop...
       - run:
-          name: Prepare native Intel toolchain under Rosetta
+          name: Bundle sidecar runtime
+          command: pnpm --filter heifang-desktop bundle:sidecar
+      - package-mac:
+          arch: arm64
+      - verify-mac-package:
+          arch: arm64
+      - store_artifacts:
+          path: /tmp/heifang-mac-arm64
+          destination: heifang-mac-arm64
+
+  build-mac-x64:
+    # CircleCI 已下线 Intel macOS 资源；在 Apple Silicon 上通过 Rosetta
+    # 使用 x86_64 Node/uv 工具链，生成真正的 x86_64 内置 Python、Node
+    # 和原生依赖。
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    working_directory: ~/heifang
+    environment:
+      NODE_OPTIONS: --max-old-space-size=8192
+      DESKTOP_RELEASE_CHANNEL: stable
+      CI: "true"
+    steps:
+      - checkout-release-source
+      - run:
+          name: Install Rosetta
           command: |
             set -euo pipefail
             softwareupdate --install-rosetta --agree-to-license || true
-
-            x64_root="$HOME/x64-toolchain"
-            rm -rf "$x64_root"
-            mkdir -p "$x64_root/node" "$x64_root/uv" "$x64_root/bin"
-
-            curl --fail --location --retry 3 \
-              --output /tmp/node-x64.tar.gz \
-              https://nodejs.org/dist/v22.18.0/node-v22.18.0-darwin-x64.tar.gz
-            tar -xzf /tmp/node-x64.tar.gz -C "$x64_root/node" --strip-components=1
-
-            curl --fail --location --retry 3 \
-              --output /tmp/uv-x64.tar.gz \
-              https://github.com/astral-sh/uv/releases/download/0.12.2/uv-x86_64-apple-darwin.tar.gz
-            tar -xzf /tmp/uv-x64.tar.gz -C "$x64_root/uv" --strip-components=1
-
-            PATH="$x64_root/node/bin:$PATH" \
-              "$x64_root/node/bin/corepack" enable --install-directory "$x64_root/bin"
-            PATH="$x64_root/node/bin:$PATH" \
-              COREPACK_HOME="$HOME/.cache/corepack-x64" \
-              "$x64_root/node/bin/corepack" prepare pnpm@10.28.1 --activate
-
-            arch -x86_64 "$x64_root/node/bin/node" -e \
-              'if (process.arch !== "x64") process.exit(1)'
-            arch -x86_64 "$x64_root/uv/uv" --version
-
       - run:
-          name: Build and verify Intel package
+          name: Download x64 build tools
           command: |
             set -euo pipefail
-            rm -rf source-x64
-            git clone --filter=blob:none --no-checkout "git@github.com:${SOURCE_REPOSITORY}.git" source-x64
-            git -C source-x64 fetch --depth=1 origin "$SOURCE_COMMIT"
-            git -C source-x64 checkout --detach "$SOURCE_COMMIT"
-            test "$(git -C source-x64 rev-parse HEAD)" = "$SOURCE_COMMIT"
-
-            export X64_ROOT="$HOME/x64-toolchain"
-            export X64_PATH="$X64_ROOT/bin:$X64_ROOT/node/bin:$X64_ROOT/uv:/usr/bin:/bin:/usr/sbin:/sbin"
-            # cryptography 49+ no longer publishes macOS x86_64 wheels.
-            printf '%s\n' 'cryptography<49' > /tmp/heifang-x64-constraints.txt
-            arch -x86_64 /bin/bash -c '
-              set -euo pipefail
-              export PATH="$X64_PATH"
-              export COREPACK_HOME="$HOME/.cache/corepack-x64"
-              export NODE_OPTIONS="--max-old-space-size=8192"
-              export CSC_IDENTITY_AUTO_DISCOVERY=false
-              export UV_CONSTRAINT=/tmp/heifang-x64-constraints.txt
-              test "$(node -p process.arch)" = x64
-              test "$(node -p "require(\"./source-x64/apps/desktop/package.json\").version")" = "$APP_VERSION"
-              cd source-x64
-              pnpm install --frozen-lockfile --filter heifang-desktop...
-              pnpm -C apps/desktop bundle:sidecar
-              pnpm -C apps/desktop build
-              pnpm -C apps/desktop exec electron-builder \
-                --config electron-builder.config.mjs \
-                --mac \
-                --x64 \
-                --publish never
-            '
-
-            desktop=source-x64/apps/desktop
-            node_bin="$desktop/resources/tools/node/bin/node"
-            python_bin="$(realpath "$desktop/resources/sidecar/python/bin/python3")"
-            app_bin="$(find "$desktop/release" -type f -path '*/Contents/MacOS/*' -perm -111 | head -n 1)"
-            dmg="$desktop/release/${APP_VERSION}/HeiFang-${APP_VERSION}-mac-x64.dmg"
-            test -x "$node_bin"
-            test -x "$python_bin"
-            test -n "$app_bin"
-            test -f "$dmg"
-            lipo -archs "$node_bin" | grep -qw x86_64
-            lipo -archs "$python_bin" | grep -qw x86_64
-            lipo -archs "$app_bin" | grep -qw x86_64
-            cp "$dmg" /tmp/heifang-mac-dist/
-            (
-              cd /tmp/heifang-mac-dist
-              shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256"
-              shasum -a 256 -c *.sha256
-            )
-
+            mkdir -p "$HOME/x64-tools" "$HOME/x64-node"
+            curl -fsSL https://nodejs.org/dist/v22.18.0/node-v22.18.0-darwin-x64.tar.gz \
+              -o "$HOME/x64-tools/node.tar.gz"
+            tar -xzf "$HOME/x64-tools/node.tar.gz" -C "$HOME/x64-node" --strip-components=1
+            curl -fsSL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz \
+              -o "$HOME/x64-tools/uv.tar.gz"
+            tar -xzf "$HOME/x64-tools/uv.tar.gz" -C "$HOME/x64-tools"
+            uv_source=$(printf '%s\n' "$HOME"/x64-tools/uv-*/uv | head -n 1)
+            test -x "$uv_source"
+            cp "$uv_source" "$HOME/x64-tools/uv"
+            chmod +x "$HOME/x64-tools/uv"
+            echo 'export PATH="$HOME/x64-tools:$HOME/x64-node/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Verify x64 Node
+          command: |
+            set -euo pipefail
+            source "$BASH_ENV"
+            node --version
+            test "$(node -p 'process.arch')" = "x64"
+      - run:
+          name: Enable x64 pnpm
+          command: |
+            set -euo pipefail
+            source "$BASH_ENV"
+            corepack enable
+            corepack prepare pnpm@10.28.1 --activate
+            pnpm --version
+      - run:
+          name: Verify x64 uv binary
+          command: |
+            set -euo pipefail
+            source "$BASH_ENV"
+            file "$HOME/x64-tools/uv"
+            uv --version
+      - run:
+          name: Install workspace dependencies
+          command: pnpm install --frozen-lockfile --filter heifang-desktop...
+      - run:
+          name: Bundle sidecar runtime
+          command: |
+            source "$BASH_ENV"
+            pnpm --filter heifang-desktop bundle:sidecar
+      - package-mac:
+          arch: x64
+      - verify-mac-package:
+          arch: x64
       - store_artifacts:
-          path: /tmp/heifang-mac-dist
-          destination: macos-test-v0.9.74
+          path: /tmp/heifang-mac-x64
+          destination: heifang-mac-x64
 
 workflows:
-  build-macos-test:
+  mac-release-build:
+    when: << pipeline.parameters.build_mac >>
     jobs:
-      - build-macos-test:
-          filters:
-            branches:
-              only: main
+      - build-mac-arm64:
+          filters: pipeline.git.branch == "build/macos-0.9.213-7ef5a235"
+      - build-mac-x64:
+          filters: pipeline.parameters.build_intel and pipeline.git.branch == "build/macos-0.9.213-7ef5a235"
+          requires:
+            - build-mac-arm64
