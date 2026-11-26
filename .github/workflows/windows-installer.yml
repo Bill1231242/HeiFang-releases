@@ -1,0 +1,104 @@
+name: Windows installer acceptance
+on:
+  push:
+    branches: [qa/windows-installer-0.9.215]
+permissions:
+  contents: write
+jobs:
+  install:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PAYLOAD_SHA: '66A432F435A5BC7BC64B11261453C64DC63A5EDC61BF0B169BDE2466CA29DC90'
+      INSTALLER_SHA: 'DFEBD2C24A5B14569A424FBA8FEBCA12AD324195DFE618FF35803ACF6835B5DF'
+      PAYLOAD_FILES: '67249'
+      DELTA_SHA: '4009A950121EC6261E63F3187A51591E27041CCE2348C52BEE43D83265CD5A51'
+    steps:
+      - name: Verify production installer on fresh installation and upgrade
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'heifang-acceptance'
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $target = Join-Path $work 'installed'
+          $new = 'HeiFang-0.9.215-win-x64.exe'
+          $old = 'HeiFang-0.9.214-win-x64.exe'
+          $delta = 'windows-installer.delta.zip'
+          foreach ($pair in @(@('v0.9.215', $delta), @('v0.9.214', $old))) {
+            gh release download $pair[0] --repo $env:REPOSITORY --pattern $pair[1] --dir $work
+            if ($LASTEXITCODE) { throw "Download failed for $($pair[0])" }
+          }
+          if ((Get-FileHash -LiteralPath "$work/$old").Hash -ine '10d524759588ed23e9d6577ba7068b7dd2524de6d6a6bc91f0172c3ffe408e75') {
+            throw 'Baseline installer digest mismatch'
+          }
+          if ((Get-FileHash -LiteralPath "$work/$delta").Hash -ine $env:DELTA_SHA) {
+            throw 'Draft delta digest mismatch'
+          }
+          $reconstruct = @'
+          import json
+          import sys
+          from zipfile import ZipFile
+
+          _, base, patch, output = sys.argv
+          with open(base, "rb") as original, ZipFile(patch) as archive, open(output, "xb") as target:
+              with archive.open("insert.bin") as additions:
+                  for offset, length in json.loads(archive.read("actions.json")):
+                      if offset is None:
+                          chunk = additions.read(length)
+                      else:
+                          original.seek(offset)
+                          chunk = original.read(length)
+                      if len(chunk) != length:
+                          raise Exception("Incomplete installer delta")
+                      target.write(chunk)
+                  if additions.read(1):
+                      raise Exception("Unexpected extra bytes")
+          '@
+          $reconstruct | python - "$work/$old" "$work/$delta" "$work/$new"
+          if ($LASTEXITCODE -or (Get-FileHash -LiteralPath "$work/$new").Hash -ine $env:INSTALLER_SHA) {
+            throw 'Exact release installer could not be reconstructed'
+          }
+          function Install($installer, $version) {
+            $p = Start-Process -FilePath "$work/$installer" -ArgumentList @('/S', "/D=$target") -Wait -PassThru
+            if ($p.ExitCode) { throw "Installer $installer exited $($p.ExitCode)" }
+            $app = Get-ChildItem -LiteralPath $target -Filter 'HeiFang*.exe' -File | Select-Object -First 1
+            if (-not $app -or $app.VersionInfo.ProductVersion -ne "$version.0") {
+              throw "No application of version $version was installed"
+            }
+          }
+          function Verify-Tree($scenario) {
+            $files = @([IO.Directory]::EnumerateFiles($target, '*', [IO.SearchOption]::AllDirectories) |
+              Where-Object { $_ -notlike "$target\Uninstall *.exe" })
+            [Array]::Sort($files, [StringComparer]::Ordinal)
+            if ($files.Length -ne [int]$env:PAYLOAD_FILES) { throw "$scenario count mismatch: $($files.Length)" }
+            $manifest = Join-Path $work "$scenario.tsv"
+            $writer = [IO.StreamWriter]::new($manifest, $false, [Text.UTF8Encoding]::new($false))
+            $writer.NewLine = "`n"
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+              foreach ($file in $files) {
+                $stream = [IO.File]::OpenRead($file)
+                try {
+                  $digest = [Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant()
+                  $writer.WriteLine("$($stream.Length)`t$digest`t$([IO.Path]::GetRelativePath($target, $file))")
+                } finally { $stream.Dispose() }
+              }
+            } finally { $sha.Dispose(); $writer.Dispose() }
+            if ((Get-FileHash -LiteralPath $manifest).Hash -ine $env:PAYLOAD_SHA) {
+              throw "$scenario complete installed-tree digest mismatch"
+            }
+            "Verified $scenario ($($files.Length) SHA-256 file checks)"
+          }
+          Install $new '0.9.215'
+          Verify-Tree fresh
+          $uninstall = @(Get-ChildItem -LiteralPath $target -Filter 'Uninstall *.exe' -File)
+          if ($uninstall.Count -ne 1) { throw 'Uninstaller missing or ambiguous' }
+          $p = Start-Process -FilePath $uninstall[0].FullName -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode) { throw "Uninstaller exited $($p.ExitCode)" }
+          Install $old '0.9.214'
+          Install $new '0.9.215'
+          Verify-Tree upgrade
+          gh release upload v0.9.215 "$work/$new" --repo $env:REPOSITORY
+          if ($LASTEXITCODE) { throw 'Could not stage the verified installer in the draft' }
