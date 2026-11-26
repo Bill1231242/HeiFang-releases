@@ -19,14 +19,16 @@ commands:
           path: /tmp/heifang-release-config
       - add_ssh_keys:
           fingerprints:
-            - "SHA256:WawZS+NpaAx3/ot08xKo9AWGNtOJ0gE+zMI2fqyaTkA"
+            - "SHA256:vmxldrviCvW+ZfQfGqhGsRqxmMEkFZl9mUlP9Hc+UGw"
       - run:
           name: Check out the pinned HeiFang release source
           command: |
             set -euo pipefail
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
-            git config --global core.sshCommand "ssh -o StrictHostKeyChecking=yes"
+            ssh_key="$HOME/.ssh/id_rsa_e6f47608030f8b5985c8095e24df03a8"
+            test -s "$ssh_key"
+            export GIT_SSH_COMMAND="ssh -F /dev/null -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i $ssh_key"
             printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
             ssh-add -l
             git init -q
