@@ -1,13 +1,13 @@
 version: 2.1
 
-# macOS 构建手动触发。只有签名并通过公证校验的产物进入正式发布。
+# 本分支构建 Apple Silicon 内测包。
 parameters:
   build_mac:
     type: boolean
     default: true
   build_intel:
     type: boolean
-    default: true
+    default: false
   sign_mac:
     type: boolean
     default: false
@@ -30,12 +30,11 @@ commands:
             test -s "$ssh_key"
             export GIT_SSH_COMMAND="ssh -F /dev/null -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i $ssh_key"
             printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
-            ssh-add -l
             git init -q
             git remote add origin git@github.com:Bill1231242/HeiFang.git
-            git fetch --depth=1 origin 7ef5a2358233e10d53694ba6071f80fd2ba5acf5
+            git fetch --depth=1 origin 1f3a6eb8f5e1899a9e611f2f2e3f297e3af5a1df
             git checkout --detach FETCH_HEAD
-            test "$(git rev-parse HEAD)" = 7ef5a2358233e10d53694ba6071f80fd2ba5acf5
+            test "$(git rev-parse HEAD)" = 1f3a6eb8f5e1899a9e611f2f2e3f297e3af5a1df
   package-mac:
     parameters:
       arch:
@@ -78,13 +77,17 @@ commands:
             if [[ "$arch" == x64 ]]; then machine=x86_64; fi
             desktop=apps/desktop
             version="$(node -p "require('./$desktop/package.json').version")"
-            test "$version" = 0.9.213
+            test "$version" = 0.9.221
             release="$desktop/release/$version"
             name="HeiFang-$version-mac-$arch"
             test -s "$release/$name.dmg"
             test -s "$release/$name.zip"
             test -s "$release/latest-mac.yml"
-            app="$(find "$release" -type d -name '*.app' -prune -print -quit)"
+            hdiutil verify "$release/$name.dmg"
+            mount="$(mktemp -d /tmp/heifang-mac-check.XXXXXX)"
+            hdiutil attach "$release/$name.dmg" -readonly -nobrowse -mountpoint "$mount"
+            trap 'hdiutil detach "$mount"' EXIT
+            app="$(find "$mount" -type d -name '*.app' -prune -print -quit)"
             test -n "$app"
             plist="$app/Contents/Info.plist"
             executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
@@ -93,8 +96,12 @@ commands:
             resources="$app/Contents/Resources"
             test "$("$resources/tools/node/bin/node" -p process.arch)" = "$arch"
             PYTHONPATH="$resources/sidecar/site-packages" "$resources/sidecar/python/bin/python3" -s -c \
-              "import platform, six; assert platform.machine() == '$machine'; assert six.__version__ == '1.17.0'"
-            hdiutil verify "$release/$name.dmg"
+              "import platform, six; from heifang.runtime.verify import work_prose_evidence_steer; assert platform.machine() == '$machine'; assert six.__version__ == '1.17.0'; assert work_prose_evidence_steer(['report.md'])"
+            for file in engine/loop.py engine/tool_round.py engine/finalize.py tool_failures.py verify.py; do
+              cmp "apps/server/heifang/runtime/$file" "$resources/sidecar/site-packages/heifang/runtime/$file"
+            done
+            ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/$executable" \
+              "$desktop/scripts/packaged-main-runtime.cjs" "$resources"
             if << pipeline.parameters.sign_mac >>; then
               codesign --verify --deep --strict "$app"
               xcrun stapler validate "$app"
@@ -108,6 +115,7 @@ commands:
             cd "$stage"
             shasum -a 256 "$name.dmg" "$name.zip" > SHA256SUMS.txt
             shasum -a 256 -c SHA256SUMS.txt
+            printf 'Version: %s\nArchitecture: %s\nSource: %s\n' "$version" "$arch" "$(git -C "$OLDPWD" rev-parse HEAD)" > BUILD.txt
 
 jobs:
   build-mac-arm64:
@@ -227,8 +235,8 @@ workflows:
     when: << pipeline.parameters.build_mac >>
     jobs:
       - build-mac-arm64:
-          filters: pipeline.git.branch == "build/macos-0.9.213-7ef5a235"
+          filters: pipeline.git.branch == "build/macos-0.9.221-1f3a6eb"
       - build-mac-x64:
-          filters: pipeline.parameters.build_intel and pipeline.git.branch == "build/macos-0.9.213-7ef5a235"
+          filters: pipeline.parameters.build_intel and pipeline.git.branch == "build/macos-0.9.221-1f3a6eb"
           requires:
             - build-mac-arm64
