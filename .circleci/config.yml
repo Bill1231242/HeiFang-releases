@@ -93,7 +93,7 @@ commands:
             executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$version"
             lipo -archs "$app/Contents/MacOS/$executable" | grep -qw "$machine"
-            resources="$app/Contents/Resources"
+            resources="$(cd "$app/Contents/Resources" && pwd -P)"
             test "$("$resources/tools/node/bin/node" -p process.arch)" = "$arch"
             PYTHONPATH="$resources/sidecar/site-packages" "$resources/sidecar/python/bin/python3" -s -c \
               "import platform, six; from heifang.runtime.verify import work_prose_evidence_steer; assert platform.machine() == '$machine'; assert six.__version__ == '1.17.0'; assert work_prose_evidence_steer(['report.md'])"
@@ -107,6 +107,7 @@ commands:
               xcrun stapler validate "$app"
             fi
             stage="/tmp/heifang-mac-$arch"
+            source_sha="$(git rev-parse HEAD)"
             mkdir -p "$stage"
             cp "$release/$name.dmg" "$release/$name.zip" "$release/latest-mac.yml" "$stage/"
             for file in "$release/$name."*.blockmap; do
@@ -115,7 +116,7 @@ commands:
             cd "$stage"
             shasum -a 256 "$name.dmg" "$name.zip" > SHA256SUMS.txt
             shasum -a 256 -c SHA256SUMS.txt
-            printf 'Version: %s\nArchitecture: %s\nSource: %s\n' "$version" "$arch" "$(git -C "$OLDPWD" rev-parse HEAD)" > BUILD.txt
+            printf 'Version: %s\nArchitecture: %s\nSource: %s\n' "$version" "$arch" "$source_sha" > BUILD.txt
 
 jobs:
   build-mac-arm64:
